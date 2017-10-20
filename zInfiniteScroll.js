@@ -1,98 +1,101 @@
-(function (ng) {
+(function (angular) {
     'use strict';
-    var module = ng.module('zInfiniteScroll', []);
+    var module = angular.module('zInfiniteScroll', []);
 
-    module.directive('zInfiniteScroll', ['$timeout', '$document', function ($timeout, $document) {
+    module.directive('zInfiniteScroll', ['$parse', '$timeout', function ($parse, $timeout) {
         return {
             restrict: 'A',
-            link: function link($scope, $element, $attr) {
-                var lengthThreshold = $attr.scrollThreshold || 50,
-                    timeThreshold   = $attr.timeThreshold || 200,
-                    handler         = $scope.$eval($attr.zInfiniteScroll),
-                    bodyScroll      = $scope.$eval($attr.bodyScroll) === true ? true : false,
-                    inverse         = $scope.$eval($attr.inverse) === true ? true : false,
-                    promise         = null,
-                    lastScrolled    = 9999,
-                    element         = $element[0],
-                    scrollEvent,
-                    isDestorying = false;
+            link: function link(scope, element, attrs) {
+                var isDestroying = false;
 
-                $scope.$on('$destroy', function handleDestroyEvent() {
-                    isDestorying = true;
-                    $document.off('scroll', scrollEvent);
+                var handlerCallback = $parse(attrs.zInfiniteScroll);
+                var finishedCallback = $parse(attrs.scrollFinished);
+                var bodyScroll = !!scope.$eval(attrs.bodyScroll);
+                var inverse = !!scope.$eval(attrs.inverse);
+
+                var finished = false;
+                var loading = false;
+
+                var lengthThreshold;
+                var timeThreshold;
+
+                lengthThreshold = parseInt(attrs.scrollThreshold, 10) || 50;
+                timeThreshold = parseInt(attrs.timeThreshold, 10) || 200;
+
+                element = element[0];
+                if (bodyScroll) {
+                    element = document.documentElement;
+                }
+
+                element.addEventListener('scroll', loadData);
+
+                scope.$on('$destroy', function handleDestroyEvent() {
+                    isDestroying = true;
+
+                    element.removeEventListener('scroll', loadData);
                 });
 
-                lengthThreshold = parseInt(lengthThreshold, 10);
-                timeThreshold = parseInt(timeThreshold, 10);
+                scope.$watch(function () {
+                    return finishedCallback(scope);
+                }, function (value) {
+                    finished = !!value;
+                });
 
-                // if user not setting the handle function, it would giving default one
-                if (!handler || !ng.isFunction(handler)) {
-                    handler = ng.noop;
-                }
-
-                // -1 means your callback function decide when to scroll
-                if (inverse) {
-                    scrollEvent = scrollUntilDataReady;
-                } else {
-                    scrollEvent = scrollUntilTimeout;
-                }
-
-                // if element doesn't want to set height, this would be helpful.
-                if (bodyScroll) {
-                    $document.on('scroll', scrollEvent);
-                    element = $document[0].documentElement;
-                } else {
-                    $element.on('scroll', scrollEvent);
-                }
-
-                // it will be scrolled once your data loaded
-                function scrollUntilDataReady() {
-                    if (isDestorying) return;
-
-                    var scrolled = calculateBarScrolled();
-                    // if we have reached the threshold and we scroll up
-                    if (scrolled < lengthThreshold && (scrolled - lastScrolled) < 0 && (element.scrollHeight >= element.clientHeight)) {
-                        var originalHeight = element.scrollHeight;
-                        var handlerCallback = $scope.$apply(handler);
-                        if (handlerCallback && typeof handlerCallback.then === 'function') {
-                            handlerCallback.then(function() {
-                                $timeout(function() {
-                                    element.scrollTop = element.scrollHeight - originalHeight;
-                                });
-                            });
-                        }
-                    }
-                    lastScrolled = scrolled;
-                }
-
-                function scrollUntilTimeout() {
-                    if (isDestorying) return;
-                    var scrolled = calculateBarScrolled();
-
-                    // if we have reached the threshold and we scroll down
-                    if (scrolled < lengthThreshold && (scrolled - lastScrolled) < 0 && (element.scrollHeight >= element.clientHeight)) {
-                        // if there is already a timer running which has no expired yet we have to cancel it and restart the timer
-                        if (promise !== null) {
-                            $timeout.cancel(promise);
-                        }
-                        promise = $timeout(function () {
-                            handler();
-                            promise = null;
-                        }, timeThreshold);
-                    }
-                    lastScrolled = scrolled;
-                }
-
-                // for compatibility for all browser
                 function calculateBarScrolled() {
-                    var scrollTop;
-                    if (bodyScroll) {
-                        scrollTop = $document[0].documentElement.scrollTop || $document[0].body.scrollTop;
-                    } else {
-                        scrollTop = element.scrollTop;
+                    if (inverse) {
+                        if (bodyScroll) {
+                            return element.scrollTop || document.body.scrollTop;
+                        }
+
+                        return element.scrollTop;
                     }
-                    return inverse ? scrollTop : element.scrollHeight - (element.clientHeight + scrollTop);
+
+                    if (bodyScroll) {
+                        return element.scrollHeight - (element.clientHeight + (element.scrollTop || document.body.scrollTop));
+                    }
+
+                    return element.scrollHeight - (element.clientHeight + element.scrollTop);
                 }
+
+                function loadData() {
+                    if (isDestroying || finished || loading) {
+                        return;
+                    }
+
+                    var scrolled = calculateBarScrolled();
+                    if (scrolled < lengthThreshold) {
+                        scope.$evalAsync(function () {
+                            var originalHeight = element.scrollHeight;
+
+                            loading = true;
+
+                            var callback = handlerCallback(scope);
+                            if (!callback || typeof callback !== 'object' || typeof callback.then !== 'function') {
+                                callback = $timeout(angular.noop, timeThreshold);
+                            }
+
+                            callback
+                                .then(function () {
+                                    loading = false;
+
+                                    // Force a digest and give the dom time to render (this assumes dom rendering when calling $timeout)
+                                    $timeout(function () {
+                                        if (element.scrollHeight !== originalHeight) {
+                                            if (inverse) {
+                                                element.scrollTop = element.scrollHeight - originalHeight;
+                                            }
+
+                                            loadData();
+                                        }
+                                    });
+                                }, function () {
+                                    loading = false;
+                                });
+                        });
+                    }
+                }
+
+                loadData();
             }
         };
     }]);
